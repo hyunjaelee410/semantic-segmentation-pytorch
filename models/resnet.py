@@ -162,9 +162,6 @@ def resnet50(attention_type=None, **kwargs):
       converted_state_dict[converted_name] = weight
     del state_dict
 
-    import ipdb
-    ipdb.set_trace()
-
     model.load_state_dict(converted_state_dict)
 
     return model
