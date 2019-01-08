@@ -31,7 +31,8 @@ def train(segmentation_module, iterator, optimizers, history, epoch, args):
         batch_data = next(iterator)
         data_time.update(time.time() - tic)
 
-        segmentation_module.zero_grad()
+        if i % args.batch_accum == 0:
+            segmentation_module.zero_grad()
 
         # forward pass
         loss, acc = segmentation_module(batch_data)
@@ -40,8 +41,10 @@ def train(segmentation_module, iterator, optimizers, history, epoch, args):
 
         # Backward
         loss.backward()
-        for optimizer in optimizers:
-            optimizer.step()
+
+        if i % args.batch_accum == args.batch_accum - 1 or i == args.epoch_iters - 1:
+            for optimizer in optimizers:
+                optimizer.step()
 
         # measure elapsed time
         batch_time.update(time.time() - tic)
@@ -115,8 +118,12 @@ def group_weight(module):
 
 def create_optimizers(nets, args):
     (net_encoder, net_decoder, crit) = nets
+
+    encoder_params = [{'params': [p for p in net_encoder.parameters() if not getattr(p, 'affine_gate', False)]},
+                      {'params': [p for p in net_encoder.parameters() if getattr(p, 'affine_gate', False)], 
+                       'lr': args.lr_encoder * args.affine_lr, 'weight_decay': 0}]
     optimizer_encoder = torch.optim.SGD(
-        group_weight(net_encoder),
+        encoder_params,
         lr=args.lr_encoder,
         momentum=args.beta1,
         weight_decay=args.weight_decay)
@@ -146,12 +153,11 @@ def main(args):
     net_encoder = builder.build_encoder(
         arch=args.arch_encoder,
         fc_dim=args.fc_dim,
-        weights=args.weights_encoder)
+        attention_type=args.attention_type)
     net_decoder = builder.build_decoder(
         arch=args.arch_decoder,
         fc_dim=args.fc_dim,
-        num_class=args.num_class,
-        weights=args.weights_decoder)
+        num_class=args.num_class)
 
     crit = nn.NLLLoss(ignore_index=-1)
 
@@ -217,10 +223,6 @@ if __name__ == '__main__':
                         help="architecture of net_encoder")
     parser.add_argument('--arch_decoder', default='ppm_deepsup',
                         help="architecture of net_decoder")
-    parser.add_argument('--weights_encoder', default='',
-                        help="weights to finetune net_encoder")
-    parser.add_argument('--weights_decoder', default='',
-                        help="weights to finetune net_decoder")
     parser.add_argument('--fc_dim', default=2048, type=int,
                         help='number of features between encoder and decoder')
 
@@ -254,8 +256,10 @@ if __name__ == '__main__':
                         help='weights regularizer')
     parser.add_argument('--deep_sup_scale', default=0.4, type=float,
                         help='the weight of deep supervision loss')
-    parser.add_argument('--fix_bn', default=0, type=int,
+    parser.add_argument('--fix_bn', default=1, type=int,
                         help='fix bn params')
+    parser.add_argument('--batch_accum', default=4, type=int,
+                        help='batch accum')
 
     # Data related arguments
     parser.add_argument('--num_class', default=150, type=int,
@@ -280,6 +284,11 @@ if __name__ == '__main__':
     parser.add_argument('--disp_iter', type=int, default=20,
                         help='frequency to display')
 
+    # Attention arguments
+    parser.add_argument('--attention_type', type=str, metavar='Attention',
+                        help='attention type {se, style_attention} (default: None)')
+    parser.add_argument('--affine_lr', default=1.0, type=float, metavar='M',
+                        help='lr mutiplier for affine_gate (default: 10)')
     args = parser.parse_args()
     print("Input arguments:")
     for key, val in vars(args).items():
@@ -292,18 +301,15 @@ if __name__ == '__main__':
     args.running_lr_encoder = args.lr_encoder
     args.running_lr_decoder = args.lr_decoder
 
-    args.id += '-' + args.arch_encoder
     args.id += '-' + args.arch_decoder
     args.id += '-ngpus' + str(args.num_gpus)
     args.id += '-batchSize' + str(args.batch_size)
-    args.id += '-imgMaxSize' + str(args.imgMaxSize)
-    args.id += '-paddingConst' + str(args.padding_constant)
-    args.id += '-segmDownsampleRate' + str(args.segm_downsampling_rate)
-    args.id += '-LR_encoder' + str(args.lr_encoder)
-    args.id += '-LR_decoder' + str(args.lr_decoder)
-    args.id += '-epoch' + str(args.num_epoch)
     if args.fix_bn:
         args.id += '-fixBN'
+    if args.attention_type != None:
+        args.id += '-attention-' + args.attention_type
+    else:
+        args.id += '-attention-none'
     print('Model ID: {}'.format(args.id))
 
     args.ckpt = os.path.join(args.ckpt, args.id)
